@@ -7,10 +7,8 @@ from google.oauth2.service_account import Credentials
 import hashlib
 import os
 
-# ---------- 設定 ----------
 st.set_page_config(page_title="WeiZhe 家教學習平台", page_icon="📚", layout="wide")
 
-# ---------- 連接 Google Sheets ----------
 @st.cache_resource
 def get_gsheet_client():
     scopes = [
@@ -47,14 +45,20 @@ def save_data(df, sheet_name):
     except Exception as e:
         st.error(f"寫入 {sheet_name} 失敗：{e}")
 
-# ---------- 密碼雜湊 ----------
+def parse_date_safe(series):
+    result = pd.to_datetime(series, errors="coerce", format="%Y-%m-%d")
+    mask = result.isna()
+    if mask.any():
+        result2 = pd.to_datetime(series[mask], errors="coerce", format="%Y/%m/%d")
+        result.loc[mask] = result2
+    return result
+
 def hash_password(password, salt):
     return hashlib.sha256((password + salt).encode()).hexdigest()
 
 def verify_password(password, salt, password_hash):
     return hash_password(password, salt) == password_hash
 
-# ---------- Session 初始化 ----------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user" not in st.session_state:
@@ -62,15 +66,15 @@ if "user" not in st.session_state:
 if "must_change_pw" not in st.session_state:
     st.session_state.must_change_pw = False
 
-# ---------- 常數 ----------
 REQ_COLS = ["id", "student_id", "type", "original_lesson_id", "requested_date",
             "requested_start", "requested_end", "reason", "status", "created_at", "teacher_note"]
+PROG_COLS = ["id", "student_id", "lesson_id", "date", "content", "homework", "note", "created_at"]
 
-# ---------- 載入資料 ----------
 accounts = load_data("accounts")
 students = load_data("students")
 lessons = load_data("lessons")
 requests_df = load_data("requests", REQ_COLS)
+progress_df = load_data("progress", PROG_COLS)
 
 # ---------- 登入頁 ----------
 def login_page():
@@ -106,7 +110,7 @@ def login_page():
                         else:
                             st.error("❌ 學號或密碼錯誤")
 
-# ---------- 強制改密碼頁 ----------
+# ---------- 改密碼 ----------
 def change_password_page():
     st.title("🔑 首次登入請更改密碼")
     st.markdown("為了安全，請設定自己的密碼。")
@@ -156,9 +160,12 @@ def home_page():
         if my_lessons.empty:
             st.info("目前沒有排定的課程")
         else:
-            my_lessons["date"] = pd.to_datetime(my_lessons["date"], errors="coerce").dt.date
+            my_lessons["date"] = parse_date_safe(my_lessons["date"]).dt.date
             today = date.today()
-            upcoming = my_lessons[my_lessons["date"] >= today].sort_values(["date", "start"])
+            upcoming = my_lessons[
+                (my_lessons["date"] >= today) &
+                (my_lessons["status"].astype(str) != "已補課")
+            ].sort_values(["date", "start"])
             if upcoming.empty:
                 st.info("目前沒有即將到來的課程")
             else:
@@ -179,7 +186,7 @@ def home_page():
         view.columns = ["類型", "日期", "開始時間", "狀態", "老師回覆"]
         st.dataframe(view, use_container_width=True)
 
-# ---------- 請假/補課頁面 ----------
+# ---------- 請假/補課 ----------
 def request_page():
     user = st.session_state.user
     student_id = user.get("student_id")
@@ -195,7 +202,7 @@ def request_page():
         st.warning("目前沒有可申請的課程")
         return
 
-    my_lessons["date"] = pd.to_datetime(my_lessons["date"], errors="coerce").dt.date
+    my_lessons["date"] = parse_date_safe(my_lessons["date"]).dt.date
 
     st.subheader("🛌 申請請假")
     with st.form("leave_form"):
@@ -226,7 +233,7 @@ def request_page():
                     ]], columns=REQ_COLS)
                     requests_df_new = pd.concat([requests_df, new_row], ignore_index=True)
                     save_data(requests_df_new, "requests")
-                    st.success("✅ 請假申請已送出，等待老師審核")
+                    st.success("✅ 請假申請已送出")
                     st.rerun()
 
     st.markdown("---")
@@ -237,11 +244,18 @@ def request_page():
     if my_requests.empty:
         st.info("目前沒有申請紀錄")
     else:
+        lesson_map = lessons.set_index("id").to_dict("index") if not lessons.empty else {}
+
         for idx, row in my_requests.iterrows():
             with st.container():
                 col1, col2, col3 = st.columns([3, 2, 2])
                 with col1:
-                    st.markdown(f"**{row['type']}** — {row.get('requested_date', '')} {row.get('requested_start', '')}")
+                    st.markdown(f"**{row['type']}**")
+                    if row["type"] == "請假":
+                        orig_id = row.get("original_lesson_id")
+                        if str(orig_id).isdigit() and int(orig_id) in lesson_map:
+                            orig = lesson_map[int(orig_id)]
+                            st.caption(f"📅 原課程：{orig.get('date')} {orig.get('start')}-{orig.get('end')}")
                     st.caption(f"原因：{row.get('reason', '')}")
                     st.caption(f"送出時間：{row.get('created_at', '')}")
                 with col2:
@@ -254,8 +268,6 @@ def request_page():
                         st.error("❌ 已拒絕")
                     elif status == "已取消":
                         st.info("🚫 已取消")
-                    else:
-                        st.info(status)
                 with col3:
                     if str(row.get("status", "")) == "待處理":
                         if st.button("取消申請", key=f"cancel_{row['id']}"):
@@ -279,12 +291,11 @@ def my_schedule_page():
         return
 
     my_lessons = lessons[lessons["student_id"].astype(str) == str(student_id)].copy()
-
     if my_lessons.empty:
         st.info("目前沒有課程")
         return
 
-    my_lessons["date"] = pd.to_datetime(my_lessons["date"], errors="coerce")
+    my_lessons["date"] = parse_date_safe(my_lessons["date"])
     my_lessons = my_lessons.dropna(subset=["date"])
     my_lessons = my_lessons.sort_values(["date", "start"])
 
@@ -304,23 +315,10 @@ def my_schedule_page():
 
     def status_icon(s):
         s = str(s)
-        if s == "已排定":
-            return "✅"
-        elif s == "待補課":
-            return "🔄"
-        elif s == "已補課":
-            return "✔️"
+        if s == "已排定": return "✅"
+        elif s == "待補課": return "🔄"
+        elif s == "已補課": return "✔️"
         return "❓"
-
-    def status_color(s):
-        s = str(s)
-        if s == "已排定":
-            return "🟢"
-        elif s == "待補課":
-            return "🟡"
-        elif s == "已補課":
-            return "⚪"
-        return "⚫"
 
     current_month = None
     for _, row in my_lessons.iterrows():
@@ -345,8 +343,45 @@ def my_schedule_page():
                 if row.get("note"):
                     st.caption(f"📝 {row['note']}")
             with col2:
-                st.markdown(f"{status_color(status)} {status_icon(status)} {status}")
+                st.markdown(f"{status_icon(status)} {status}")
             st.markdown("")
+
+# ---------- 我的學習進度 ----------
+def my_progress_page():
+    user = st.session_state.user
+    student_id = user.get("student_id")
+
+    st.title("📊 我的學習進度")
+
+    if progress_df.empty:
+        st.info("目前沒有進度紀錄")
+        return
+
+    my_progress = progress_df[progress_df["student_id"].astype(str) == str(student_id)].copy()
+    if my_progress.empty:
+        st.info("目前沒有進度紀錄")
+        return
+
+    my_progress["date_parsed"] = parse_date_safe(my_progress["date"])
+    my_progress = my_progress.dropna(subset=["date_parsed"])
+    my_progress = my_progress.sort_values("date_parsed", ascending=False)
+
+    st.caption(f"共 {len(my_progress)} 筆紀錄")
+
+    for _, row in my_progress.iterrows():
+        d = row["date_parsed"].date()
+        wd = ['一', '二', '三', '四', '五', '六', '日'][d.weekday()]
+
+        with st.container():
+            st.markdown(f"## 📅 {d.strftime('%Y-%m-%d')}（週{wd}）")
+            st.markdown(f"**📖 上課內容：**")
+            st.markdown(f"{row.get('content', '')}")
+            if row.get("homework"):
+                st.markdown(f"**📝 作業：**")
+                st.markdown(f"{row['homework']}")
+            if row.get("note"):
+                st.caption(f"💬 老師備註：{row['note']}")
+            st.markdown("---")
 
 # ---------- 主程式 ----------
 if not st.session_state.logged_in:
@@ -361,8 +396,9 @@ else:
 
         menu = st.radio("功能選單", [
             "🏠 首頁",
-            "📝 請假/補課",
             "📅 我的課表",
+            "📊 學習進度",
+            "📝 請假/補課",
             "📁 我的檔案",
         ])
 
@@ -375,10 +411,12 @@ else:
 
     if menu == "🏠 首頁":
         home_page()
-    elif menu == "📝 請假/補課":
-        request_page()
     elif menu == "📅 我的課表":
         my_schedule_page()
+    elif menu == "📊 學習進度":
+        my_progress_page()
+    elif menu == "📝 請假/補課":
+        request_page()
     elif menu == "📁 我的檔案":
         st.title("📁 我的檔案")
         st.info("功能開發中...")
