@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+import os
+import time
+os.environ["TZ"] = "Asia/Taipei"
+try:
+    time.tzset()
+except AttributeError:
+    pass
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
@@ -8,9 +16,7 @@ from google.oauth2.credentials import Credentials as OAuthCredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import hashlib
-import os
 import io
-
 st.set_page_config(page_title="WeiZhe 家教學習平台", page_icon="📚", layout="wide")
 
 # ---------- Google Sheets ----------
