@@ -148,7 +148,6 @@ def home_page():
 
     st.title(f"👋 嗨，{name}")
 
-    # 下次上課
     st.subheader("📅 下次上課")
     if lessons.empty or "student_id" not in lessons.columns:
         st.info("目前沒有排定的課程")
@@ -170,7 +169,6 @@ def home_page():
 
     st.markdown("---")
 
-    # 我的申請紀錄
     st.subheader("📝 我的申請")
     my_requests = requests_df[requests_df["student_id"].astype(str) == str(student_id)] if not requests_df.empty else pd.DataFrame()
 
@@ -188,7 +186,6 @@ def request_page():
 
     st.title("📝 請假 / 補課申請")
 
-    # 我的課程
     if lessons.empty or "student_id" not in lessons.columns:
         st.warning("目前沒有可申請的課程")
         return
@@ -200,7 +197,6 @@ def request_page():
 
     my_lessons["date"] = pd.to_datetime(my_lessons["date"], errors="coerce").dt.date
 
-    # ---- 申請請假 ----
     st.subheader("🛌 申請請假")
     with st.form("leave_form"):
         today = date.today()
@@ -235,7 +231,6 @@ def request_page():
 
     st.markdown("---")
 
-    # ---- 我的申請紀錄（含取消） ----
     st.subheader("📋 我的申請紀錄")
     my_requests = requests_df[requests_df["student_id"].astype(str) == str(student_id)] if not requests_df.empty else pd.DataFrame()
 
@@ -272,6 +267,87 @@ def request_page():
                         st.caption(f"老師：{row['teacher_note']}")
                 st.markdown("---")
 
+# ---------- 我的課表 ----------
+def my_schedule_page():
+    user = st.session_state.user
+    student_id = user.get("student_id")
+
+    st.title("📅 我的課表")
+
+    if lessons.empty or "student_id" not in lessons.columns:
+        st.info("目前沒有課程")
+        return
+
+    my_lessons = lessons[lessons["student_id"].astype(str) == str(student_id)].copy()
+
+    if my_lessons.empty:
+        st.info("目前沒有課程")
+        return
+
+    my_lessons["date"] = pd.to_datetime(my_lessons["date"], errors="coerce")
+    my_lessons = my_lessons.dropna(subset=["date"])
+    my_lessons = my_lessons.sort_values(["date", "start"])
+
+    today = date.today()
+    scope = st.radio("顯示範圍", ["未來課程", "過去課程", "全部"], horizontal=True)
+
+    if scope == "未來課程":
+        my_lessons = my_lessons[my_lessons["date"].dt.date >= today]
+    elif scope == "過去課程":
+        my_lessons = my_lessons[my_lessons["date"].dt.date < today]
+
+    if my_lessons.empty:
+        st.info(f"沒有{scope}")
+        return
+
+    st.markdown("---")
+
+    def status_icon(s):
+        s = str(s)
+        if s == "已排定":
+            return "✅"
+        elif s == "待補課":
+            return "🔄"
+        elif s == "已補課":
+            return "✔️"
+        return "❓"
+
+    def status_color(s):
+        s = str(s)
+        if s == "已排定":
+            return "🟢"
+        elif s == "待補課":
+            return "🟡"
+        elif s == "已補課":
+            return "⚪"
+        return "⚫"
+
+    current_month = None
+    for _, row in my_lessons.iterrows():
+        d = row["date"].date()
+        month_str = d.strftime("%Y年%m月")
+
+        if month_str != current_month:
+            st.subheader(f"📅 {month_str}")
+            current_month = month_str
+
+        wd = ['一', '二', '三', '四', '五', '六', '日'][d.weekday()]
+        status = row.get("status", "")
+
+        with st.container():
+            col1, col2 = st.columns([3, 2])
+            with col1:
+                st.markdown(
+                    f"**{d.strftime('%m/%d')}（週{wd}）**　"
+                    f"`{row['start']} - {row['end']}`　"
+                    f"**{row.get('type', '正課')}**"
+                )
+                if row.get("note"):
+                    st.caption(f"📝 {row['note']}")
+            with col2:
+                st.markdown(f"{status_color(status)} {status_icon(status)} {status}")
+            st.markdown("")
+
 # ---------- 主程式 ----------
 if not st.session_state.logged_in:
     login_page()
@@ -302,8 +378,7 @@ else:
     elif menu == "📝 請假/補課":
         request_page()
     elif menu == "📅 我的課表":
-        st.title("📅 我的課表")
-        st.info("功能開發中...")
+        my_schedule_page()
     elif menu == "📁 我的檔案":
         st.title("📁 我的檔案")
         st.info("功能開發中...")
